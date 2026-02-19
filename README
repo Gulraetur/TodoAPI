@@ -1,0 +1,37 @@
+# Простое REST API для управления задачами (To-Do List)
+
+## Функциональность
+
+- **GET /tasks** – получить список всех задач.
+- **POST /tasks** – создать новую задачу.
+- **GET /tasks/{id}** – получить задачу по ID.
+- **PUT /tasks/{id}** – обновить задачу (можно передавать только изменяемые поля).
+- **DELETE /tasks/{id}** – удалить задачу.
+
+## Где разворачивать
+
+1. Поместить папку с файлами в 'htdocs' для XAMPP. '.htaccess' настроен для перенаправления запросов на 'index.php' (Файл в в подпапке).
+2. БД MySQL, название - 'Todo'.
+3. Импорт структуры таблицы в БД:
+
+### Структура таблицы
+
+```sql
+CREATE TABLE tasks (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    status VARCHAR(50) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+## Тестирование в Postman
+
+Создать окружение с переменной baseUrl (значение url - http://localhost/TodoAPI)
+
+Реквесты:
+- GET {{baseUrl}}/tasks
+- POST {{baseUrl}}/tasks
+- GET {{baseUrl}}/tasks/1
+- PUT {{baseUrl}}/tasks/1
+- DELETE {{baseUrl}}/tasks/1
