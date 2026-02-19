@@ -1,232 +1,160 @@
 <?php
-error_reporting(E_ALL); ini_set('display_errors', 1);
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
 
+// Подключение к БД
 require_once 'config/config.php';
 
-mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-// Коррекция пути для подпапки /TodoAPI
-$base = '/TodoAPI';
-$requestUri = $_SERVER['REQUEST_URI'];
-if (strpos($requestUri, $base) === 0) {
-    $path = substr($requestUri, strlen($base));
-} else {
-    $path = $requestUri;
-}
-$path = strtok($path, '?'); // удаляем GET-параметры
-
+// Получаем метод и путь
 $method = $_SERVER['REQUEST_METHOD'];
+$path = str_replace('/TodoAPI', '', parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
+$path = rtrim($path, '/'); // убираем trailing slash
 
-// Маршрутизация
-if ($path === '/tasks' || $path === '/tasks/') {
-    handleTasksCollection($method);
-} elseif (preg_match('#^/tasks/(\d+)$#', $path, $matches)) {
-    $id = (int)$matches[1];
-    handleTaskResource($method, $id);
-} else {
-    http_response_code(404);
-    echo json_encode(['error' => 'Not found']);
-}
-
-function handleTasksCollection($method) {
-    global $conn;
-
+if ($path === '/tasks') {
+    // Работа со списком задач
     switch ($method) {
         case 'GET':
-            try {
-                $result = $conn->query('SELECT * FROM tasks ORDER BY created_at DESC');
-                $tasks = $result->fetch_all(MYSQLI_ASSOC);
-                echo json_encode($tasks);
-            } catch (Exception $e) {
-                http_response_code(500);
-                echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
+            $result = $conn->query("SELECT * FROM tasks ORDER BY created_at DESC");
+            $tasks = [];
+            while ($row = $result->fetch_assoc()) {
+                $tasks[] = $row;
             }
+            echo json_encode($tasks);
             break;
 
         case 'POST':
             $input = json_decode(file_get_contents('php://input'), true);
+            $title = trim($input['title'] ?? '');
+            $description = trim($input['description'] ?? '');
+            $status = trim($input['status'] ?? '');
 
-            if (!isset($input['title'], $input['description'], $input['status'])) {
+            if (!$title || !$description || !$status) {
                 http_response_code(400);
-                echo json_encode(['error' => 'Missing required fields: title, description, status']);
-                return;
+                echo json_encode(['error' => 'Все поля обязательны']);
+                break;
             }
 
-            $title = trim($input['title']);
-            $description = trim($input['description']);
-            $status = trim($input['status']);
+            $stmt = $conn->prepare("INSERT INTO tasks (title, description, status, created_at) VALUES (?, ?, ?, NOW())");
+            $stmt->bind_param('sss', $title, $description, $status);
+            $stmt->execute();
 
-            if ($title === '' || $description === '' || $status === '') {
-                http_response_code(400);
-                echo json_encode(['error' => 'Fields cannot be empty']);
-                return;
-            }
+            $newId = $stmt->insert_id;
+            $stmt->close();
 
-            try {
-                $stmt = $conn->prepare('INSERT INTO tasks (title, description, status, created_at) VALUES (?, ?, ?, NOW())');
-                $stmt->bind_param('sss', $title, $description, $status);
-                $stmt->execute();
+            $result = $conn->query("SELECT * FROM tasks WHERE id = $newId");
+            $newTask = $result->fetch_assoc();
 
-                $newId = $stmt->insert_id;
-                $stmt->close();
-
-                $result = $conn->query("SELECT * FROM tasks WHERE id = $newId");
-                $newTask = $result->fetch_assoc();
-
-                http_response_code(201);
-                echo json_encode($newTask);
-            } catch (Exception $e) {
-                http_response_code(500);
-                echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
-            }
+            http_response_code(201);
+            echo json_encode($newTask);
             break;
 
         default:
             http_response_code(405);
-            echo json_encode(['error' => 'Method not allowed']);
+            echo json_encode(['error' => 'Метод не поддерживается']);
     }
-}
-
-function handleTaskResource($method, $id) {
-    global $conn;
-
-    // Проверка существования задачи (для GET, PUT, DELETE)
-    try {
-        $stmt = $conn->prepare('SELECT * FROM tasks WHERE id = ?');
-        $stmt->bind_param('i', $id);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $task = $result->fetch_assoc();
-        $stmt->close();
-
-        if (!$task && $method !== 'PUT' && $method !== 'DELETE') {
-            http_response_code(404);
-            echo json_encode(['error' => 'Task not found']);
-            return;
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
-        return;
-    }
+} elseif (preg_match('#^/tasks/(\d+)$#', $path, $matches)) {
+    // Работа с одной задачей
+    $id = (int)$matches[1];
 
     switch ($method) {
         case 'GET':
-            echo json_encode($task);
+            $result = $conn->query("SELECT * FROM tasks WHERE id = $id");
+            $task = $result->fetch_assoc();
+            if ($task) {
+                echo json_encode($task);
+            } else {
+                http_response_code(404);
+                echo json_encode(['error' => 'Задача не найдена']);
+            }
             break;
 
         case 'PUT':
             $input = json_decode(file_get_contents('php://input'), true);
-            if (!$input) {
+            $title = isset($input['title']) ? trim($input['title']) : null;
+            $description = isset($input['description']) ? trim($input['description']) : null;
+            $status = isset($input['status']) ? trim($input['status']) : null;
+
+            // Проверяем, что хотя бы одно поле передано
+            if ($title === null && $description === null && $status === null) {
                 http_response_code(400);
-                echo json_encode(['error' => 'Invalid JSON']);
-                return;
+                echo json_encode(['error' => 'Нет данных для обновления']);
+                break;
             }
 
+            // Формируем запрос динамически
             $updates = [];
             $params = [];
             $types = '';
 
-            if (isset($input['title'])) {
-                $title = trim($input['title']);
+            if ($title !== null) {
                 if ($title === '') {
                     http_response_code(400);
-                    echo json_encode(['error' => 'Title cannot be empty']);
-                    return;
+                    echo json_encode(['error' => 'Title не может быть пустым']);
+                    break;
                 }
-                $updates[] = 'title = ?';
+                $updates[] = "title = ?";
                 $params[] = $title;
                 $types .= 's';
             }
-
-            if (isset($input['description'])) {
-                $description = trim($input['description']);
+            if ($description !== null) {
                 if ($description === '') {
                     http_response_code(400);
-                    echo json_encode(['error' => 'Description cannot be empty']);
-                    return;
+                    echo json_encode(['error' => 'Description не может быть пустым']);
+                    break;
                 }
-                $updates[] = 'description = ?';
+                $updates[] = "description = ?";
                 $params[] = $description;
                 $types .= 's';
             }
-
-            if (isset($input['status'])) {
-                $status = trim($input['status']);
+            if ($status !== null) {
                 if ($status === '') {
                     http_response_code(400);
-                    echo json_encode(['error' => 'Status cannot be empty']);
-                    return;
+                    echo json_encode(['error' => 'Status не может быть пустым']);
+                    break;
                 }
-                $updates[] = 'status = ?';
+                $updates[] = "status = ?";
                 $params[] = $status;
                 $types .= 's';
             }
 
-            if (empty($updates)) {
-                http_response_code(400);
-                echo json_encode(['error' => 'No fields to update']);
-                return;
-            }
+            $params[] = $id;
+            $types .= 'i';
 
-            try {
-                $params[] = $id;
-                $types .= 'i';
+            $sql = "UPDATE tasks SET " . implode(', ', $updates) . " WHERE id = ?";
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
 
-                $sql = 'UPDATE tasks SET ' . implode(', ', $updates) . ' WHERE id = ?';
-                $stmt = $conn->prepare($sql);
-                $stmt->bind_param($types, ...$params);
-                $stmt->execute();
-
-                // Проверка, была ли задача удалена во время запроса
-                if ($stmt->affected_rows === 0) {
-                    $check = $conn->query("SELECT id FROM tasks WHERE id = $id");
-                    if ($check->num_rows === 0) {
-                        http_response_code(404);
-                        echo json_encode(['error' => 'Task not found']);
-                        return;
-                    }
-                }
-
+            if ($stmt->affected_rows > 0 || $stmt->errno === 0) {
+                // Возвращаем обновлённую задачу
                 $result = $conn->query("SELECT * FROM tasks WHERE id = $id");
                 $updatedTask = $result->fetch_assoc();
                 echo json_encode($updatedTask);
-            } catch (Exception $e) {
-                http_response_code(500);
-                echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
+            } else {
+                http_response_code(404);
+                echo json_encode(['error' => 'Задача не найдена']);
             }
+            $stmt->close();
             break;
 
         case 'DELETE':
-            try {
-                $stmt = $conn->prepare('DELETE FROM tasks WHERE id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
+            $stmt = $conn->prepare("DELETE FROM tasks WHERE id = ?");
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
 
-                if ($stmt->affected_rows === 0) {
-                    http_response_code(404);
-                    echo json_encode(['error' => 'Task not found']);
-                    return;
-                }
-
-                http_response_code(204); // No content
-            } catch (Exception $e) {
-                http_response_code(500);
-                echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
+            if ($stmt->affected_rows > 0) {
+                http_response_code(204); // нет содержимого
+            } else {
+                http_response_code(404);
+                echo json_encode(['error' => 'Задача не найдена']);
             }
+            $stmt->close();
             break;
 
         default:
             http_response_code(405);
-            echo json_encode(['error' => 'Method not allowed']);
+            echo json_encode(['error' => 'Метод не поддерживается']);
     }
+} else {
+    http_response_code(404);
+    echo json_encode(['error' => 'Неверный путь']);
 }
